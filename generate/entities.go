@@ -8,26 +8,44 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway/descriptor"
 )
 
-var (
-	swaggerMapTypes = map[string]reflect.Kind{
-		"string":   reflect.String,
-		"int":      reflect.Int,
-		"int32":    reflect.Int,
-		"uint32":   reflect.Int,
-		"uint64":   reflect.Int64,
-		"int64":    reflect.Int64,
-		"[]string": reflect.Slice,
-		"[]int":    reflect.Slice,
-		"[]int64":  reflect.Slice,
-		"[]int32":  reflect.Slice,
-		"[]uint32": reflect.Slice,
-		"[]uint64": reflect.Slice,
-		"bool":     reflect.Bool,
-		"struct":   reflect.Struct,
-		"float32":  reflect.Float32,
-		"float64":  reflect.Float64,
-	}
-)
+var swaggerMapTypes = map[string]reflect.Kind{
+	"string":   reflect.String,
+	"*string":  reflect.String,
+	"int":      reflect.Int,
+	"*int":     reflect.Int,
+	"uint":     reflect.Uint,
+	"*uint":    reflect.Uint,
+	"int8":     reflect.Int8,
+	"*int8":    reflect.Int8,
+	"uint8":    reflect.Uint8,
+	"*uint8":   reflect.Uint8,
+	"int16":    reflect.Int16,
+	"*int16":   reflect.Int16,
+	"uint16":   reflect.Uint16,
+	"*uint16":  reflect.Uint16,
+	"int32":    reflect.Int,
+	"*int32":   reflect.Int,
+	"uint32":   reflect.Int,
+	"*uint32":  reflect.Int,
+	"uint64":   reflect.Int64,
+	"*uint64":  reflect.Int64,
+	"int64":    reflect.Int64,
+	"*int64":   reflect.Int64,
+	"[]string": reflect.Slice,
+	"[]int":    reflect.Slice,
+	"[]int64":  reflect.Slice,
+	"[]int32":  reflect.Slice,
+	"[]uint32": reflect.Slice,
+	"[]uint64": reflect.Slice,
+	"bool":     reflect.Bool,
+	"*bool":    reflect.Bool,
+	"struct":   reflect.Struct,
+	"*struct":  reflect.Struct,
+	"float32":  reflect.Float32,
+	"*float32": reflect.Float32,
+	"float64":  reflect.Float64,
+	"*float64": reflect.Float64,
+}
 
 // http://swagger.io/specification/#infoObject
 type swaggerInfoObject struct {
@@ -116,14 +134,20 @@ type swaggerOperationObject struct {
 	OperationID string                  `json:"operationId"`
 	Responses   swaggerResponsesObject  `json:"responses"`
 	Parameters  swaggerParametersObject `json:"parameters,omitempty"`
-	Tags        []string                `json:"tags,omitempty"`
-	Deprecated  bool                    `json:"deprecated,omitempty"`
+	RequestBody *struct {
+		Content swaggerContentObject `json:"content,omitempty"`
+	} `json:"requestBody,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	Deprecated bool     `json:"deprecated,omitempty"`
 
 	Security     *[]swaggerSecurityRequirementObject `json:"security,omitempty"`
 	ExternalDocs *swaggerExternalDocumentationObject `json:"externalDocs,omitempty"`
 }
 
-type swaggerParametersObject []swaggerParameterObject
+type (
+	swaggerParametersObject []swaggerParameterObject
+	swaggerContentObject    map[string]swaggerParametersObject
+)
 
 // http://swagger.io/specification/#parameterObject
 type swaggerParameterObject struct {
@@ -138,6 +162,7 @@ type swaggerParameterObject struct {
 	CollectionFormat string              `json:"collectionFormat,omitempty"`
 	Default          string              `json:"default,omitempty"`
 	MinItems         *int                `json:"minItems,omitempty"`
+	Example          string              `json:"example,omitempty"`
 
 	// Or you can explicitly refer to another type. If this is defined all
 	// other fields should be empty
@@ -147,10 +172,10 @@ type swaggerParameterObject struct {
 // core part of schema, which is common to itemsObject and schemaObject.
 // http://swagger.io/specification/#itemsObject
 type schemaCore struct {
-	Type    string          `json:"type,omitempty"`
-	Format  string          `json:"format,omitempty"`
-	Ref     string          `json:"$ref,omitempty"`
-	Example json.RawMessage `json:"example,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Format  string `json:"format,omitempty"`
+	Ref     string `json:"$ref,omitempty"`
+	Example string `json:"example,omitempty"`
 
 	Items *swaggerItemsObject `json:"items,omitempty"`
 	// If the item is an enumeration include a list of all the *NAMES* of the

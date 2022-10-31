@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -19,13 +20,38 @@ const (
 	defaultOption   = "default"
 	stringOption    = "string"
 	optionalOption  = "optional"
+	omitemptyOption = "omitempty"
 	optionsOption   = "options"
 	rangeOption     = "range"
+	exampleOption   = "example"
 	optionSeparator = "|"
 	equalToken      = "="
 )
 
 var excludePaths = []string{"/swagger", "/swagger-json"}
+
+func parseRangeOption(option string) (float64, float64, bool) {
+	const str = "\\[([+-]?\\d+(\\.\\d+)?):([+-]?\\d+(\\.\\d+)?)\\]"
+	result := regexp.MustCompile(str).FindStringSubmatch(option)
+	if len(result) != 5 {
+		return 0, 0, false
+	}
+
+	min, err := strconv.ParseFloat(result[1], 64)
+	if err != nil {
+		return 0, 0, false
+	}
+
+	max, err := strconv.ParseFloat(result[3], 64)
+	if err != nil {
+		return 0, 0, false
+	}
+
+	if max < min {
+		return min, min, true
+	}
+	return min, max, true
+}
 
 func applyGenerate(p *plugin2.Plugin, host string, basePath string) (*swaggerObject, error) {
 	title, _ := strconv.Unquote(p.Api.Info.Properties["title"])
@@ -74,7 +100,12 @@ func applyGenerate(p *plugin2.Plugin, host string, basePath string) (*swaggerObj
 func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swaggerPathsObject, requestResponseRefs refMap) {
 	for _, group := range groups {
 		for _, route := range group.Routes {
-			path := route.Path
+
+			path := group.GetAnnotation("prefix") + route.Path
+			if path[0] != '/' {
+				path = "/" + path
+			}
+			//path := route.Path
 			isExclude := false
 			for _, excludePath := range excludePaths {
 				if path == excludePath {
@@ -93,52 +124,115 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 					if strings.Contains(part, ":") {
 						key := strings.TrimPrefix(p[i], ":")
 						path = strings.Replace(path, fmt.Sprintf(":%s", key), fmt.Sprintf("{%s}", key), 1)
-						parameters = append(parameters, swaggerParameterObject{
+
+						spo := swaggerParameterObject{
 							Name:     key,
 							In:       "path",
 							Required: true,
 							Type:     "string",
-						})
+						}
+
+						// extend the comment functionality
+						// to allow query string parameters definitions
+						// EXAMPLE:
+						// @doc(
+						// 	summary: "Get Cart"
+						// 	description: "returns a shopping cart if one exists"
+						// 	customerId: "customer id"
+						// )
+						//
+						// the format for a parameter is
+						// paramName: "the param description"
+						//
+
+						prop := route.AtDoc.Properties[key]
+						if prop != "" {
+							// remove quotes
+							spo.Description = strings.Trim(prop, "\"")
+						}
+
+						parameters = append(parameters, spo)
 					}
 				}
 			}
 			if defineStruct, ok := route.RequestType.(spec.DefineStruct); ok {
+				for _, member := range defineStruct.Members {
+					if member.Name == "" {
+						memberDefineStruct, _ := member.Type.(spec.DefineStruct)
+						for _, m := range memberDefineStruct.Members {
+							if strings.Contains(m.Tag, "header") {
+								tempKind := swaggerMapTypes[strings.Replace(m.Type.Name(), "[]", "", -1)]
+								ftype, format, ok := primitiveSchema(tempKind, m.Type.Name())
+								if !ok {
+									ftype = tempKind.String()
+									format = "UNKNOWN"
+								}
+								sp := swaggerParameterObject{In: "header", Type: ftype, Format: format}
+
+								for _, tag := range m.Tags() {
+									sp.Name = tag.Name
+									if len(tag.Options) == 0 {
+										sp.Required = true
+										continue
+									}
+
+									required := true
+									for _, option := range tag.Options {
+										if strings.HasPrefix(option, optionsOption) {
+											segs := strings.SplitN(option, equalToken, 2)
+											if len(segs) == 2 {
+												sp.Enum = strings.Split(segs[1], optionSeparator)
+											}
+										}
+
+										if strings.HasPrefix(option, rangeOption) {
+											segs := strings.SplitN(option, equalToken, 2)
+											if len(segs) == 2 {
+												min, max, ok := parseRangeOption(segs[1])
+												if ok {
+													sp.Schema.Minimum = min
+													sp.Schema.Maximum = max
+												}
+											}
+										}
+
+										if strings.HasPrefix(option, defaultOption) {
+											segs := strings.Split(option, equalToken)
+											if len(segs) == 2 {
+												sp.Default = segs[1]
+											}
+										} else if strings.HasPrefix(option, optionalOption) || strings.HasPrefix(option, omitemptyOption) {
+											required = false
+										}
+
+										if strings.HasPrefix(option, exampleOption) {
+											segs := strings.Split(option, equalToken)
+											if len(segs) == 2 {
+												sp.Example = segs[1]
+											}
+										}
+									}
+									sp.Required = required
+								}
+								sp.Description = strings.TrimLeft(m.Comment, "//")
+								parameters = append(parameters, sp)
+							}
+						}
+						continue
+					}
+				}
 				if strings.ToUpper(route.Method) == http.MethodGet {
 					for _, member := range defineStruct.Members {
 						if strings.Contains(member.Tag, "path") {
 							continue
 						}
-						tempKind := swaggerMapTypes[strings.Replace(member.Type.Name(), "[]", "", -1)]
-						ftype, format, ok := primitiveSchema(tempKind, member.Type.Name())
-						if !ok {
-							ftype = tempKind.String()
-							format = "UNKNOWN"
-						}
-						sp := swaggerParameterObject{In: "query", Type: ftype, Format: format}
-
-						for _, tag := range member.Tags() {
-							sp.Name = tag.Name
-							if len(tag.Options) == 0 {
-								sp.Required = true
-								continue
+						if embedStruct, isEmbed := member.Type.(spec.DefineStruct); isEmbed {
+							for _, m := range embedStruct.Members {
+								parameters = append(parameters, renderStruct(m))
 							}
-							for _, option := range tag.Options {
-								if strings.HasPrefix(option, defaultOption) {
-									segs := strings.Split(option, equalToken)
-									if len(segs) == 2 {
-										sp.Default = segs[1]
-									}
-								} else if !strings.HasPrefix(option, optionalOption) {
-									sp.Required = true
-								}
-							}
+							continue
 						}
-
-						if len(member.Comment) > 0 {
-							sp.Description = strings.TrimLeft(member.Comment, "//")
-						}
-
-						parameters = append(parameters, sp)
+						parameters = append(parameters, renderStruct(member))
 					}
 				} else {
 
@@ -150,12 +244,20 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 								Ref: reqRef,
 							},
 						}
-						parameters = append(parameters, swaggerParameterObject{
+						parameter := swaggerParameterObject{
 							Name:     "body",
 							In:       "body",
 							Required: true,
 							Schema:   &schema,
-						})
+						}
+						doc := strings.Join(route.RequestType.Documents(), ",")
+						doc = strings.Replace(doc, "//", "", -1)
+
+						if doc != "" {
+							parameter.Description = doc
+						}
+
+						parameters = append(parameters, parameter)
 					}
 				}
 			}
@@ -208,6 +310,10 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 
 			operationObject.Description = strings.ReplaceAll(operationObject.Description, "\"", "")
 
+			if group.Annotation.Properties["jwt"] != "" {
+				operationObject.Security = &[]swaggerSecurityRequirementObject{{"apiKey": []string{}}}
+			}
+
 			switch strings.ToUpper(route.Method) {
 			case http.MethodGet:
 				pathItemObject.Get = operationObject
@@ -226,6 +332,69 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 	}
 }
 
+func renderStruct(member spec.Member) swaggerParameterObject {
+	tempKind := swaggerMapTypes[strings.Replace(member.Type.Name(), "[]", "", -1)]
+
+	ftype, format, ok := primitiveSchema(tempKind, member.Type.Name())
+	if !ok {
+		ftype = tempKind.String()
+		format = "UNKNOWN"
+	}
+	sp := swaggerParameterObject{In: "query", Type: ftype, Format: format}
+
+	for _, tag := range member.Tags() {
+		sp.Name = tag.Name
+		if len(tag.Options) == 0 {
+			sp.Required = true
+			continue
+		}
+
+		required := true
+		for _, option := range tag.Options {
+			if strings.HasPrefix(option, optionsOption) {
+				segs := strings.SplitN(option, equalToken, 2)
+				if len(segs) == 2 {
+					sp.Enum = strings.Split(segs[1], optionSeparator)
+				}
+			}
+
+			if strings.HasPrefix(option, rangeOption) {
+				segs := strings.SplitN(option, equalToken, 2)
+				if len(segs) == 2 {
+					min, max, ok := parseRangeOption(segs[1])
+					if ok {
+						sp.Schema.Minimum = min
+						sp.Schema.Maximum = max
+					}
+				}
+			}
+
+			if strings.HasPrefix(option, defaultOption) {
+				segs := strings.Split(option, equalToken)
+				if len(segs) == 2 {
+					sp.Default = segs[1]
+				}
+			} else if strings.HasPrefix(option, optionalOption) || strings.HasPrefix(option, omitemptyOption) {
+				required = false
+			}
+
+			if strings.HasPrefix(option, exampleOption) {
+				segs := strings.Split(option, equalToken)
+				if len(segs) == 2 {
+					sp.Example = segs[1]
+				}
+			}
+		}
+		sp.Required = required
+	}
+
+	if len(member.Comment) > 0 {
+		sp.Description = strings.TrimLeft(member.Comment, "//")
+	}
+
+	return sp
+}
+
 func renderReplyAsDefinition(d swaggerDefinitionsObject, m messageMap, p []spec.Type, refs refMap) {
 	for _, i2 := range p {
 		schema := swaggerSchemaObject{
@@ -238,7 +407,7 @@ func renderReplyAsDefinition(d swaggerDefinitionsObject, m messageMap, p []spec.
 		schema.Title = defineStruct.Name()
 
 		for _, member := range defineStruct.Members {
-			if strings.Contains(member.Tag, "path") {
+			if hasPathParameters(member) {
 				continue
 			}
 			kv := keyVal{Value: schemaOfField(member)}
@@ -246,11 +415,30 @@ func renderReplyAsDefinition(d swaggerDefinitionsObject, m messageMap, p []spec.
 			if tag, err := member.GetPropertyName(); err == nil {
 				kv.Key = tag
 			}
+			if kv.Key == "" {
+				memberStruct, _ := member.Type.(spec.DefineStruct)
+				for _, m := range memberStruct.Members {
+					if strings.Contains(m.Tag, "header") {
+						continue
+					}
+
+					mkv := keyVal{
+						Value: schemaOfField(m),
+						Key:   m.Name,
+					}
+
+					if tag, err := m.GetPropertyName(); err == nil {
+						mkv.Key = tag
+					}
+					if schema.Properties == nil {
+						schema.Properties = &swaggerSchemaObjectProperties{}
+					}
+					*schema.Properties = append(*schema.Properties, mkv)
+				}
+				continue
+			}
 			if schema.Properties == nil {
 				schema.Properties = &swaggerSchemaObjectProperties{}
-			}
-			if kv.Key == "" {
-				continue
 			}
 			*schema.Properties = append(*schema.Properties, kv)
 
@@ -261,19 +449,35 @@ func renderReplyAsDefinition(d swaggerDefinitionsObject, m messageMap, p []spec.
 					}
 					continue
 				}
-				schema.Required = append(schema.Required, tag.Name)
+
+				required := true
 				for _, option := range tag.Options {
-					switch {
-					case strings.HasPrefix(option, optionalOption):
-						schema.Required = del(schema.Required, tag.Name)
+					// case strings.HasPrefix(option, defaultOption):
+					// case strings.HasPrefix(option, optionsOption):
+
+					if strings.HasPrefix(option, optionalOption) || strings.HasPrefix(option, omitemptyOption) {
+						required = false
 					}
+				}
+
+				if required && !contains(schema.Required, tag.Name) {
+					schema.Required = append(schema.Required, tag.Name)
 				}
 			}
 		}
-		if i2.Name() != "" {
-			d[i2.Name()] = schema
+
+		d[i2.Name()] = schema
+	}
+}
+
+func hasPathParameters(member spec.Member) bool {
+	for _, tag := range member.Tags() {
+		if tag.Key == "path" {
+			return true
 		}
 	}
+
+	return false
 }
 
 func schemaOfField(member spec.Member) swaggerSchemaObject {
@@ -296,11 +500,23 @@ func schemaOfField(member spec.Member) swaggerSchemaObject {
 		refTypeName = strings.Replace(refTypeName, "*", "", 1)
 		refTypeName = strings.Replace(refTypeName, "{", "", 1)
 		refTypeName = strings.Replace(refTypeName, "}", "", 1)
+		// interface
 
 		if refTypeName == "interface" {
 			core = schemaCore{Type: "object"}
 		} else if refTypeName == "mapstringstring" {
 			core = schemaCore{Type: "object"}
+		} else if strings.HasPrefix(refTypeName, "[]") {
+			core = schemaCore{Type: "array"}
+
+			tempKind := swaggerMapTypes[strings.Replace(refTypeName, "[]", "", -1)]
+			ftype, format, ok := primitiveSchema(tempKind, refTypeName)
+			if ok {
+				core.Items = &swaggerItemsObject{Type: ftype, Format: format}
+			} else {
+				core.Items = &swaggerItemsObject{Type: ft.String(), Format: "UNKNOWN"}
+			}
+
 		} else {
 			core = schemaCore{
 				Ref: "#/definitions/" + refTypeName,
@@ -347,6 +563,9 @@ func schemaOfField(member spec.Member) swaggerSchemaObject {
 				Properties: props,
 			}
 		}
+		if strings.HasPrefix(member.Type.Name(), "map") {
+			fmt.Println("暂不支持map类型")
+		}
 	default:
 		ret = swaggerSchemaObject{
 			schemaCore: core,
@@ -360,7 +579,32 @@ func schemaOfField(member spec.Member) swaggerSchemaObject {
 			continue
 		}
 		for _, option := range tag.Options {
-			parserTags(option, &ret)
+			switch {
+			case strings.HasPrefix(option, defaultOption):
+				segs := strings.Split(option, equalToken)
+				if len(segs) == 2 {
+					ret.Default = segs[1]
+				}
+			case strings.HasPrefix(option, optionsOption):
+				segs := strings.SplitN(option, equalToken, 2)
+				if len(segs) == 2 {
+					ret.Enum = strings.Split(segs[1], optionSeparator)
+				}
+			case strings.HasPrefix(option, rangeOption):
+				segs := strings.SplitN(option, equalToken, 2)
+				if len(segs) == 2 {
+					min, max, ok := parseRangeOption(segs[1])
+					if ok {
+						ret.Minimum = min
+						ret.Maximum = max
+					}
+				}
+			case strings.HasPrefix(option, exampleOption):
+				segs := strings.Split(option, equalToken)
+				if len(segs) == 2 {
+					ret.Example = segs[1]
+				}
+			}
 		}
 	}
 
@@ -372,8 +616,20 @@ func primitiveSchema(kind reflect.Kind, t string) (ftype, format string, ok bool
 	switch kind {
 	case reflect.Int:
 		return "integer", "int32", true
+	case reflect.Uint:
+		return "integer", "uint32", true
+	case reflect.Int8:
+		return "integer", "int8", true
+	case reflect.Uint8:
+		return "integer", "uint8", true
+	case reflect.Int16:
+		return "integer", "int16", true
+	case reflect.Uint16:
+		return "integer", "uin16", true
 	case reflect.Int64:
 		return "integer", "int64", true
+	case reflect.Uint64:
+		return "integer", "uint64", true
 	case reflect.Bool:
 		return "boolean", "boolean", true
 	case reflect.String:

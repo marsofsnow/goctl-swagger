@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	version  = "20210116"
+	version  = "20220621"
 	commands = []*cli.Command{
 		{
 			Name:   "swagger",
