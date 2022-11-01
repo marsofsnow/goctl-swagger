@@ -3,6 +3,7 @@ package generate
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -11,7 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/zeromicro/go-zero/tools/goctl/api/spec"
-	plugin2 "github.com/zeromicro/go-zero/tools/goctl/plugin"
+	"github.com/zeromicro/go-zero/tools/goctl/plugin"
 )
 
 var strColon = []byte(":")
@@ -29,6 +30,7 @@ const (
 )
 
 var excludePaths = []string{"/swagger", "/swagger-json"}
+var excludeTagKeys = map[string]string{"header": "", "path": "", "form": ""}
 
 func parseRangeOption(option string) (float64, float64, bool) {
 	const str = "\\[([+-]?\\d+(\\.\\d+)?):([+-]?\\d+(\\.\\d+)?)\\]"
@@ -53,7 +55,7 @@ func parseRangeOption(option string) (float64, float64, bool) {
 	return min, max, true
 }
 
-func applyGenerate(p *plugin2.Plugin, host string, basePath string) (*swaggerObject, error) {
+func applyGenerate(p *plugin.Plugin, host string, basePath string) (*swaggerObject, error) {
 	title, _ := strconv.Unquote(p.Api.Info.Properties["title"])
 	version, _ := strconv.Unquote(p.Api.Info.Properties["version"])
 	desc, _ := strconv.Unquote(p.Api.Info.Properties["desc"])
@@ -98,14 +100,19 @@ func applyGenerate(p *plugin2.Plugin, host string, basePath string) (*swaggerObj
 }
 
 func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swaggerPathsObject, requestResponseRefs refMap) {
+	//log.Printf("[service]:%+v", service)
+
 	for _, group := range groups {
+		log.Printf("[group]:%+v", group)
 		for _, route := range group.Routes {
+			// route:{AtServerAnnotation:{Properties:map[]} Method:get Path:/ RequestType:<nil> ResponseType:{RawName:IndexResponse Members:[{Name:Msg Type:{RawName:string} Tag:`json:"msg"` Comment: Docs:[] IsInline:false}] Docs:[]} Docs:[] Handler:IndexHandler AtDoc:{Properties:map[] Text:"首页"} HandlerDoc:[] HandlerComment:[] Doc:[] Comment:[]}
+			//log.Printf("[route]:%+v", route)
 
 			path := group.GetAnnotation("prefix") + route.Path
 			if path[0] != '/' {
 				path = "/" + path
 			}
-			//path := route.Path
+
 			isExclude := false
 			for _, excludePath := range excludePaths {
 				if path == excludePath {
@@ -117,12 +124,15 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 				continue
 			}
 			parameters := swaggerParametersObject{}
+			// 处理路径参数url tag:{path}
 			if countParams(path) > 0 {
 				p := strings.Split(path, "/")
 				for i := range p {
 					part := p[i]
+					// path 是靠分析url的/:确定的
 					if strings.Contains(part, ":") {
 						key := strings.TrimPrefix(p[i], ":")
+						//path 有:cars变成{cars}
 						path = strings.Replace(path, fmt.Sprintf(":%s", key), fmt.Sprintf("{%s}", key), 1)
 
 						spo := swaggerParameterObject{
@@ -156,76 +166,33 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 				}
 			}
 			if defineStruct, ok := route.RequestType.(spec.DefineStruct); ok {
+
+				//处理header
+				/*				for _, member := range defineStruct.Members {
+								// {Name:Address Type:{RawName:string} Tag:`json:"address"` Comment: Docs:[] IsInline:false}
+								// {Name:Auth Type:{RawName:string} Tag:`header:"auth,optional"` Comment://报文头 Docs:[] IsInline:false}
+								//{Name:Where Type:{RawName:string} Tag:`form:"where"` Comment: Docs:[] IsInline:false}
+								//{Name:Who Type:{RawName:string} Tag:`path:"who"` Comment: Docs:[] IsInline:false}
+								//log.Printf("member:%+v", member)
+
+								//处理匿名字段,api里面一般也没有匿名字段
+								if member.Name == "" {
+									memberDefineStruct, _ := member.Type.(spec.DefineStruct)
+									for _, m := range memberDefineStruct.Members {
+										if strings.Contains(m.Tag, "header") {
+											parameters = append(parameters, renderStruct(m))
+										}
+									}
+									continue
+								}
+							}*/
+
 				for _, member := range defineStruct.Members {
-					if member.Name == "" {
-						memberDefineStruct, _ := member.Type.(spec.DefineStruct)
-						for _, m := range memberDefineStruct.Members {
-							if strings.Contains(m.Tag, "header") {
-								tempKind := swaggerMapTypes[strings.Replace(m.Type.Name(), "[]", "", -1)]
-								ftype, format, ok := primitiveSchema(tempKind, m.Type.Name())
-								if !ok {
-									ftype = tempKind.String()
-									format = "UNKNOWN"
-								}
-								sp := swaggerParameterObject{In: "header", Type: ftype, Format: format}
-
-								for _, tag := range m.Tags() {
-									sp.Name = tag.Name
-									if len(tag.Options) == 0 {
-										sp.Required = true
-										continue
-									}
-
-									required := true
-									for _, option := range tag.Options {
-										if strings.HasPrefix(option, optionsOption) {
-											segs := strings.SplitN(option, equalToken, 2)
-											if len(segs) == 2 {
-												sp.Enum = strings.Split(segs[1], optionSeparator)
-											}
-										}
-
-										if strings.HasPrefix(option, rangeOption) {
-											segs := strings.SplitN(option, equalToken, 2)
-											if len(segs) == 2 {
-												min, max, ok := parseRangeOption(segs[1])
-												if ok {
-													sp.Schema.Minimum = min
-													sp.Schema.Maximum = max
-												}
-											}
-										}
-
-										if strings.HasPrefix(option, defaultOption) {
-											segs := strings.Split(option, equalToken)
-											if len(segs) == 2 {
-												sp.Default = segs[1]
-											}
-										} else if strings.HasPrefix(option, optionalOption) || strings.HasPrefix(option, omitemptyOption) {
-											required = false
-										}
-
-										if strings.HasPrefix(option, exampleOption) {
-											segs := strings.Split(option, equalToken)
-											if len(segs) == 2 {
-												sp.Example = segs[1]
-											}
-										}
-									}
-									sp.Required = required
-								}
-								sp.Description = strings.TrimLeft(m.Comment, "//")
-								parameters = append(parameters, sp)
-							}
-						}
+					if strings.Contains(member.Tag, "path") {
 						continue
 					}
-				}
-				if strings.ToUpper(route.Method) == http.MethodGet {
-					for _, member := range defineStruct.Members {
-						if strings.Contains(member.Tag, "path") {
-							continue
-						}
+					if strings.Contains(member.Tag, "header") || strings.Contains(member.Tag, "form") {
+
 						if embedStruct, isEmbed := member.Type.(spec.DefineStruct); isEmbed {
 							for _, m := range embedStruct.Members {
 								parameters = append(parameters, renderStruct(m))
@@ -234,7 +201,22 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 						}
 						parameters = append(parameters, renderStruct(member))
 					}
-				} else {
+				}
+
+				//处理非get请求
+				if strings.ToUpper(route.Method) != http.MethodGet {
+
+					//post轻轻也可能出现head
+
+					//UploadRequest
+					//Auth Where
+					//body := route.RequestType.Name() //UploadRequest
+					//content := fmt.Sprintf("%s\n%s\n", body, strings.Join(deleted, " "))
+					//ioutil.WriteFile("/home/zh/body.txt", []byte(content), 0666)
+					//if len(deleted) > 0 {
+					//body = strings.Replace(body, fmt.Sprintf(`"%s"`, deleted[0]), "A", -1)
+
+					//}
 
 					reqRef := fmt.Sprintf("#/definitions/%s", route.RequestType.Name())
 
@@ -244,6 +226,7 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 								Ref: reqRef,
 							},
 						}
+
 						parameter := swaggerParameterObject{
 							Name:     "body",
 							In:       "body",
@@ -259,7 +242,7 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 
 						parameters = append(parameters, parameter)
 					}
-				}
+				} //post
 			}
 
 			pathItemObject, ok := paths[path]
@@ -272,9 +255,9 @@ func renderServiceRoutes(service spec.Service, groups []spec.Group, paths swagge
 			if route.ResponseType != nil && len(route.ResponseType.Name()) > 0 {
 				respRef = fmt.Sprintf("#/definitions/%s", route.ResponseType.Name())
 			}
-			tags := service.Name
+			tags := service.Name //默认取service的名字
 			if value := group.GetAnnotation("group"); len(value) > 0 {
-				tags = value
+				tags = value //group 的名字
 			}
 			if value := group.GetAnnotation("swtags"); len(value) > 0 {
 				tags = value
@@ -340,10 +323,15 @@ func renderStruct(member spec.Member) swaggerParameterObject {
 		ftype = tempKind.String()
 		format = "UNKNOWN"
 	}
+
 	sp := swaggerParameterObject{In: "query", Type: ftype, Format: format}
 
-	for _, tag := range member.Tags() {
-		sp.Name = tag.Name
+	for i, tag := range member.Tags() {
+		sp.Name = tag.Name //字段名字.
+		if i == 0 {
+			sp.In = tag.Key //gozero的tag一定要在最前面
+		}
+
 		if len(tag.Options) == 0 {
 			sp.Required = true
 			continue
@@ -404,10 +392,14 @@ func renderReplyAsDefinition(d swaggerDefinitionsObject, m messageMap, p []spec.
 		}
 		defineStruct, _ := i2.(spec.DefineStruct)
 
-		schema.Title = defineStruct.Name()
+		schema.Title = defineStruct.Name() //结构体的名字
+
+		//{Name:Who Type:{RawName:string} Tag:`path:"who"` Comment: Docs:[] IsInline:false}
 
 		for _, member := range defineStruct.Members {
-			if hasPathParameters(member) {
+
+			//header path form 不在作为json字段显示
+			if hasExcluParameters(member) {
 				continue
 			}
 			kv := keyVal{Value: schemaOfField(member)}
@@ -470,6 +462,15 @@ func renderReplyAsDefinition(d swaggerDefinitionsObject, m messageMap, p []spec.
 	}
 }
 
+func hasExcluParameters(member spec.Member) bool {
+	for _, tag := range member.Tags() {
+		if _, ok := excludeTagKeys[tag.Key]; ok {
+			return true
+		}
+	}
+
+	return false
+}
 func hasPathParameters(member spec.Member) bool {
 	for _, tag := range member.Tags() {
 		if tag.Key == "path" {
@@ -480,7 +481,18 @@ func hasPathParameters(member spec.Member) bool {
 	return false
 }
 
+func hasHeaderParameters(member spec.Member) bool {
+	for _, tag := range member.Tags() {
+		if tag.Key == "header" {
+			return true
+		}
+	}
+
+	return false
+}
+
 func schemaOfField(member spec.Member) swaggerSchemaObject {
+	////{Name:Who Type:{RawName:string} Tag:`path:"who"` Comment: Docs:[] IsInline:false}
 	ret := swaggerSchemaObject{}
 
 	var core schemaCore

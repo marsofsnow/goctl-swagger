@@ -5,12 +5,12 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/1278651995/zero-goctl-swagger/action"
+	"github.com/marsofsnow/goctl-swagger/action"
 	"github.com/urfave/cli/v2"
 )
 
 var (
-	version  = "20220621"
+	version  = "20221101"
 	commands = []*cli.Command{
 		{
 			Name:   "swagger",
@@ -35,11 +35,16 @@ var (
 )
 
 func main() {
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:    "print-version",
+		Aliases: []string{"V"},
+		Usage:   "print only the version",
+	}
 	app := cli.NewApp()
 	app.Usage = "a plugin of goctl to generate swagger.json"
 	app.Version = fmt.Sprintf("%s %s/%s", version, runtime.GOOS, runtime.GOARCH)
 	app.Commands = commands
 	if err := app.Run(os.Args); err != nil {
-		fmt.Printf("goctl-swagger: %+v\n", err)
+		fmt.Printf("goctl-swagger1: %+v\n", err)
 	}
 }

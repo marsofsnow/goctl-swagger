@@ -151,14 +151,14 @@ type (
 
 // http://swagger.io/specification/#parameterObject
 type swaggerParameterObject struct {
-	Name             string              `json:"name"`
+	Name             string              `json:"name"` //tag  的名字
 	Description      string              `json:"description,omitempty"`
 	In               string              `json:"in,omitempty"`
-	Required         bool                `json:"required"`
-	Type             string              `json:"type,omitempty"`
-	Format           string              `json:"format,omitempty"`
+	Required         bool                `json:"required"`         //是否必须
+	Type             string              `json:"type,omitempty"`   //  integer
+	Format           string              `json:"format,omitempty"` // int32
 	Items            *swaggerItemsObject `json:"items,omitempty"`
-	Enum             []string            `json:"enum,omitempty"`
+	Enum             []string            `json:"enum,omitempty"` //枚举值 [1,2]
 	CollectionFormat string              `json:"collectionFormat,omitempty"`
 	Default          string              `json:"default,omitempty"`
 	MinItems         *int                `json:"minItems,omitempty"`
