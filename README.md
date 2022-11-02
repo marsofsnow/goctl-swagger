@@ -1,15 +1,22 @@
 # goctl-swagger
 
-### 1. 编译goctl-swagger插件
+## 1. 编译goctl-swagger插件
 
 ```
 $ GO111MODULE=on GOPROXY=https://goproxy.cn/,direct go install  github.com/marsofsnow/goctl-swagger@latest
+$ goctl-swagger -V  //注意是大写的V,因为第三方cli升级导致-v不可用
 ```
+### 使用须知
 
-### 2. 配置环境
+* 支持go-zero及goctl版本1.4.2及以后
+* support import nested api,比如在a.api定义了类型.然后在b.api导入a.api就可以使用a.api的类型.
+* 支持在group设置的路径前缀prefix
+* 支持tag:header,path,form,json.建议gozero的tag放在最前面.其他验证库的tag放在最后面
+
+## 2. 配置环境
 将$GOPATH/bin中的goctl-swagger添加到环境变量
 
-### 3. 使用姿势
+## 3. 使用姿势
 
 * 创建api文件
     ```go
@@ -99,7 +106,7 @@ $ GO111MODULE=on GOPROXY=https://goproxy.cn/,direct go install  github.com/marso
   done
   ```
   
-### 4. 结合go-zero使用自动生成接口文档
+## 4. 结合go-zero使用自动生成接口文档
 
 具体可参考 [gozero-template](https://github.com/1278651995/gozero-template)
 
@@ -112,7 +119,7 @@ $ GO111MODULE=on GOPROXY=https://goproxy.cn/,direct go install  github.com/marso
   	get /swagger-json() returns()
   ```
 
-  > 注  /swagger, /swagger-json地址可自己定义，如需自定义，需修改zero-goctl-swagger的excludePaths取消解析路由
+  > 注  /swagger, /swagger-json地址可自己定义，如需自定义，需修改goctl-swagger的excludePaths取消解析路由
 
 - 修改生成后的Handler
 
